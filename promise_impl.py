@@ -1,57 +1,40 @@
 #!/usr/bin/env python3
-"""Promise/Future implementation from scratch."""
+"""promise_impl - Promise/Future pattern implementation."""
 import sys,threading,time
 class Promise:
-    def __init__(self,executor=None):
-        self._state='pending';self._value=None;self._callbacks=[];self._lock=threading.Lock()
-        if executor:
-            try: executor(self._resolve,self._reject)
-            except Exception as e: self._reject(e)
-    def _resolve(self,value):
-        with self._lock:
-            if self._state!='pending': return
-            self._state='fulfilled';self._value=value
-            for cb,_ in self._callbacks: cb(value)
-    def _reject(self,reason):
-        with self._lock:
-            if self._state!='pending': return
-            self._state='rejected';self._value=reason
-            for _,cb in self._callbacks:
-                if cb: cb(reason)
-    def then(self,on_fulfilled,on_rejected=None):
+    def __init__(s,executor=None):
+        s._value=None;s._error=None;s._state="pending";s._callbacks=[];s._lock=threading.Lock();s._event=threading.Event()
+        if executor:threading.Thread(target=lambda:executor(s.resolve,s.reject),daemon=True).start()
+    def resolve(s,value):
+        with s._lock:
+            if s._state!="pending":return
+            s._value=value;s._state="fulfilled";s._event.set()
+        for cb in s._callbacks:cb(value)
+    def reject(s,error):
+        with s._lock:
+            if s._state!="pending":return
+            s._error=error;s._state="rejected";s._event.set()
+    def then(s,on_fulfilled):
         p=Promise()
-        def handle_fulfilled(v):
-            try: result=on_fulfilled(v);p._resolve(result)
-            except Exception as e: p._reject(e)
-        def handle_rejected(r):
-            if on_rejected:
-                try: result=on_rejected(r);p._resolve(result)
-                except Exception as e: p._reject(e)
-            else: p._reject(r)
-        with self._lock:
-            if self._state=='fulfilled': handle_fulfilled(self._value)
-            elif self._state=='rejected': handle_rejected(self._value)
-            else: self._callbacks.append((handle_fulfilled,handle_rejected))
+        def callback(val):
+            try:result=on_fulfilled(val);p.resolve(result)
+            except Exception as e:p.reject(e)
+        if s._state=="fulfilled":callback(s._value)
+        else:s._callbacks.append(callback)
         return p
+    def wait(s,timeout=None):s._event.wait(timeout);return s._value if s._state=="fulfilled" else s._error
     @staticmethod
     def all(promises):
-        results=[None]*len(promises);count=[0]
-        p=Promise()
+        results=[None]*len(promises);done=[0];p=Promise();lock=threading.Lock()
         for i,pr in enumerate(promises):
-            def cb(v,idx=i):
-                results[idx]=v;count[0]+=1
-                if count[0]==len(promises): p._resolve(results)
-            pr.then(cb,p._reject)
+            def cb(val,idx=i):
+                with lock:results[idx]=val;done[0]+=1
+                if done[0]==len(promises):p.resolve(results)
+            pr.then(cb)
         return p
-def main():
-    # Sync demo
-    p=Promise(lambda resolve,reject: resolve(42))
-    p.then(lambda v: print(f"Resolved: {v}"))
-    # Chain
-    Promise(lambda res,rej: res(10)).then(lambda v: v*2).then(lambda v: print(f"Chained: {v}"))
-    # All
-    ps=[Promise(lambda res,rej,i=i: res(i*10)) for i in range(3)]
-    Promise.all(ps).then(lambda v: print(f"All: {v}"))
-    # Error
-    Promise(lambda res,rej: rej(ValueError("oops"))).then(lambda v: v, lambda e: print(f"Caught: {e}"))
-if __name__=="__main__": main()
+if __name__=="__main__":
+    def async_task(resolve,reject):time.sleep(0.1);resolve(42)
+    p=Promise(async_task);result=p.wait(timeout=1);print(f"Result: {result}")
+    p2=p.then(lambda x:x*2);time.sleep(0.2);print(f"Chained: {p2._value}")
+    promises=[Promise(lambda res,rej,i=i:res(i**2) or None) for i in range(5)]
+    all_p=Promise.all(promises);time.sleep(0.5);print(f"All: {all_p._value}")
